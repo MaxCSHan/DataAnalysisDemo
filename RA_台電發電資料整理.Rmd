@@ -1,0 +1,141 @@
+---
+title: "RA_台電發電資料整理"
+author: "Max"
+date: "2018/6/9"
+output:
+  html_notebook:
+    highlight: pygments
+    number_sections: no
+    theme: lumen
+    toc: yes
+    toc_float:
+      collapsed: no
+      smooth_scroll: no
+  html_document:
+    df_print: paged
+    toc: yes
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(cache = T, eval = T, echo = T, message = F, warning = F)
+```
+
+## Check Library
+```{r Packages,  cache = F}
+requiredPkgs <-c("readxl","dplyr","tidyr","magrittr","data.table","parallel","MASS","knitr")
+check.packages <- function(pkg){
+    new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
+    if (length(new.pkg)) 
+        install.packages(new.pkg, dependencies = TRUE)
+    sapply(pkg, require, character.only = TRUE)
+}
+check.packages(requiredPkgs)
+```
+
+
+## Read Data
+```{r, include = FALSE}
+setwd("~/Downloads/RA_2017/RA_2017/RA_Electricity/")
+```
+
+### Read all sheets from xlsl
+```{r}
+read_excel_allsheets <- function(filename, tibble = FALSE) {
+  # I prefer straight data.frames
+  # but if you like tidyverse tibbles (the default with read_excel)
+  # then just pass tibble = TRUE
+  sheets <- readxl::excel_sheets(filename)
+  x <- lapply(sheets, function(X) readxl::read_excel(filename, sheet = X, skip = 1))
+  if(!tibble) x <- lapply(x, as.data.frame)
+  names(x) <- sheets
+  x
+}
+```
+
+### Read data
+```{r 讀取資料}
+#Import Dataset
+elec_9099<-read_excel_allsheets("~/Downloads/RA_2017/RA_2017/RA_Electricity/90~99年台電自有機組小時發電量.xlsx")
+elec_100<-read_excel_allsheets("~/Downloads/RA_2017/RA_2017/RA_Electricity/100~106年台電自有機組小時發電量.xlsx")
+elec_9099$`91`$"上下午"<-NULL
+l  <- c(elec_9099,elec_100)
+```
+---
+
+## Data Exploration
+
+由於原始資料是寬資料，為了方便分析使用必須轉換為長資料
+```{r}
+check<-head(elec_9099$`90`, 5)
+check
+```
+```{r}
+str(elec_9099$`90`)
+```
+
+估計轉換後會有17600280筆資料
+```{r}
+Reduce(`+`,lapply(l,nrow))*24
+```
+
+---
+
+## Paralle computing set up
+因為資料筆數大，準備採用平行運算方式處理
+```{r}
+#準備多核平行處理
+numCores <- detectCores()
+```
+---
+
+## Functions
+### 重命名函數
+```{r}
+#為求方便將中文欄位轉為英文
+rename<-function(DT){
+  name<-c("year","month","date","ID","name")
+  hour<-c(1:24)
+  colnames(DT) <- c(name,hour)
+  return(DT)
+}
+```
+
+### 轉置函數
+```{r}
+#將寬資料轉置成長資料
+transposed_DT<-function(DT){
+  DT.m1 <- setDT(melt(DT, id. = c("year","month","date","ID","name"),variable.name = c("hour"),value.name = c("Gen_KWH")))
+  DT.m1[,hour:=as.numeric(hour) ]
+  DT.m1[,year:=year+1911]
+  return(DT.m1)
+}
+```
+
+### 時間函數
+```{r}
+#將數值轉為POSIXct，供後續時序列分析
+mergeTime_DT<-function(DT)
+{
+  DT[,TimeCode:= as.POSIXct(paste0(year,"-",month,"-",date," ",hour,":00:00")) ]
+  return(DT)
+}
+```
+
+## Results
+利用```mclapply```平行執行上述函數
+```{r}
+DT <- l %>% mclapply(.,rename, mc.cores = numCores) %>% mclapply(.,transposed_DT, mc.cores = numCores) %>% mclapply(.,mergeTime_DT, mc.cores = numCores)
+```
+```{r}
+elecDT<-rbindlist(DT, use.names=TRUE)
+```
+
+### Total obs.
+```{r}
+nrow(elecDT) 
+```
+
+```{r}
+head(elecDT, 10)
+```
+
